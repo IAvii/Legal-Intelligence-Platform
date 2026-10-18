@@ -35,90 +35,144 @@ SKILLS_FILE = DATA_DIR / "skills.yaml"
 # Download / load CUAD
 # ─────────────────────────────────────────────────────────────────────────────
 
-HF_DATASET = "theatticusproject/cuad-qa"
+# CUAD primary source: CUADv1.json — official full dataset with all 510 contracts
+# and ALL (contract, skill) pairs including negatives (is_impossible=True).
+# Downloaded from https://github.com/The-Atticus-Project/cuad/raw/main/data.zip
+# (data.zip -> CUADv1.json) on 2026-10-18. License: CC BY 4.0.
+#
+# chenghao/cuad_qa (HF parquet) omits negative rows, making prevalence unusable.
+# We fall back to it only for the question-name VERIFY step.
+CUAD_JSON = RAW_DIR / "cuad_extracted" / "CUADv1.json"
+HF_DATASET = "chenghao/cuad_qa"   # used only for VERIFY step (listing all questions)
 
 
-def _load_cuad_hf() -> Any:
-    """Load CUAD from Hugging Face; cache locally to data/raw/."""
-    from datasets import load_dataset  # type: ignore
+def _load_cuad_json() -> list[dict]:
+    """
+    Load CUADv1.json (SQuAD format) and return a flat list of
+    {title, context, question, answers, is_impossible} dicts.
+    """
+    if not CUAD_JSON.exists():
+        raise FileNotFoundError(
+            f"CUADv1.json not found at {CUAD_JSON}.\n"
+            "Run: Invoke-WebRequest -Uri https://github.com/The-Atticus-Project/cuad/raw/main/data.zip "
+            "-OutFile data/raw/cuad_data.zip; Expand-Archive data/raw/cuad_data.zip data/raw/cuad_extracted"
+        )
+    print(f"Loading CUAD from {CUAD_JSON} ...")
+    with open(CUAD_JSON, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    articles = data["data"]
+    rows = []
+    for article in articles:
+        title = article["title"]
+        for para in article["paragraphs"]:
+            context = para["context"]
+            for qa in para["qas"]:
+                rows.append({
+                    "title": title,
+                    "context": context,
+                    "question": qa["question"].strip(),
+                    "answers": qa.get("answers", []),
+                    "is_impossible": qa.get("is_impossible", len(qa.get("answers", [])) == 0),
+                })
+    contracts = len({r["title"] for r in rows})
+    questions = len({r["question"] for r in rows})
+    print(f"  {contracts} contracts x {questions} question types = {len(rows)} total rows")
+    return rows
 
-    print(f"Loading CUAD from Hugging Face ({HF_DATASET}) — first run downloads ~300MB ...")
-    ds = load_dataset(HF_DATASET, cache_dir=str(RAW_DIR))
-    return ds
+
+def _list_all_questions(rows: list[dict] | None = None) -> list[str]:
+    """
+    Extract all unique question strings from CUAD rows (or fall back to HF).
+    VERIFY step: confirm which CUAD category names actually exist.
+    """
+    if rows:
+        return sorted({r["question"] for r in rows if r.get("question")})
+    if CUAD_JSON.exists():
+        loaded = _load_cuad_json()
+        return sorted({r["question"] for r in loaded if r.get("question")})
+    try:
+        import warnings
+        warnings.filterwarnings("ignore")
+        from datasets import load_dataset  # type: ignore
+        ds = load_dataset(HF_DATASET)
+        split = ds["train"] if "train" in ds else list(ds.values())[0]
+        questions: set[str] = set()
+        for row in split:
+            q = row.get("question", "").strip()
+            if q:
+                questions.add(q)
+        return sorted(questions)
+    except Exception as e:
+        print(f"  Note: HF verify fallback failed ({e}), using empty list.")
+        return []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Parse into contract-level dicts
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _parse_contracts(ds: Any, skill_labels: list[str]) -> list[dict]:
+
+def _parse_contracts(rows: list[dict], skills: list[dict]) -> list[dict]:
     """
-    Returns a list of:
+    Parse flat CUADv1.json rows into contract-level dicts:
       {
         "contract_id": str,
-        "title": str,
         "text": str,
-        "gold": {skill_label: {"present": bool, "spans": [str]}}
+        "gold": {label: {"present": bool, "spans": [str]}}
       }
-    
-    Groups rows by contract (CUAD has one row per question per contract).
+
+    skill["cuad_question"] is matched as a case-insensitive substring of
+    the question text (the full CUAD question sentences contain the category
+    name as a substring).
     """
-    # CUAD train split has all annotated examples
-    split = ds["train"] if "train" in ds else list(ds.values())[0]
-
     contracts: dict[str, dict] = {}
-    skipped_fields: set[str] = set()
+    skipped_questions: set[str] = set()
 
-    for row in tqdm(split, desc="Parsing CUAD rows"):
-        # Field names to check (VERIFY against actual dataset)
-        title = row.get("title", row.get("contract_title", ""))
-        context = row.get("context", row.get("text", ""))
-        question = row.get("question", "")
-        answers = row.get("answers", {})
+    for row in tqdm(rows, desc="Parsing CUAD rows"):
+        title = row["title"].strip()
+        context = row["context"]
+        question = row["question"]
+        answers = row["answers"]
+        is_impossible = row["is_impossible"]
 
         if not title or not context:
             continue
 
-        cid = title.strip()
-        if cid not in contracts:
-            contracts[cid] = {
-                "contract_id": cid,
-                "title": cid,
+        if title not in contracts:
+            contracts[title] = {
+                "contract_id": title,
                 "text": context,
                 "gold": {},
             }
 
-        # Match question to a known skill label (case-insensitive substring)
-        matched_skill = None
-        for sl in skill_labels:
-            if sl.lower() in question.lower():
-                matched_skill = sl
+        # Match by cuad_question substring (case-insensitive)
+        matched_skill: dict | None = None
+        for sk in skills:
+            cq = sk["cuad_question"]
+            if cq.lower() in question.lower():
+                matched_skill = sk
                 break
 
         if matched_skill is None:
-            skipped_fields.add(question[:60])
+            skipped_questions.add(question[:60])
             continue
 
-        # Gold: at least one non-empty answer span = present
-        ans_texts: list[str] = []
-        if isinstance(answers, dict):
-            ans_texts = answers.get("text", [])
-        elif isinstance(answers, list):
-            ans_texts = [a.get("text", "") if isinstance(a, dict) else str(a) for a in answers]
-
-        non_empty = [t for t in ans_texts if t and t.strip()]
-        contracts[cid]["gold"][matched_skill] = {
-            "present": len(non_empty) > 0,
+        label = matched_skill["label"]
+        # Gold: is_impossible=False AND at least one non-empty span
+        non_empty = [a["text"] for a in answers if a.get("text", "").strip()] if answers else []
+        present = (not is_impossible) and len(non_empty) > 0
+        contracts[title]["gold"][label] = {
+            "present": present,
             "spans": non_empty,
         }
 
-    print(f"Parsed {len(contracts)} unique contracts.")
-    if skipped_fields:
-        print(f"  Questions not matched to any skill ({len(skipped_fields)} unique): printed to console for VERIFY.")
-        for q in sorted(skipped_fields)[:20]:
-            print(f"    - {q}")
+    result = list(contracts.values())
+    print(f"Parsed {len(result)} unique contracts.")
+    n_unmatched = len(skipped_questions)
+    if n_unmatched:
+        print(f"  {n_unmatched} question types not matched to any skill (expected — we only use 8 of 41).")
+    return result
 
-    return list(contracts.values())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -215,100 +269,94 @@ def _stratified_split(
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Candidate CUAD skill labels — VERIFY these names match the dataset's question text
-# before finalising. These are the strings we search for in the 'question' field.
-CANDIDATE_SKILLS = [
-    "Governing Law",
-    "Anti-Assignment",
-    "Cap On Liability",
-    "Termination For Convenience",
-    "Audit Rights",
-    "Insurance",
-    "License Grant",
-    "Non-Compete",
-    "Exclusivity",
-    "Liquidated Damages",
-    "Renewal Term",
-    "IP Ownership Assignment",
-    "Change Of Control",
-    "Revenue/Profit Sharing",
-    "Warranty Duration",
-    "Minimum Commitment",
-    "Post-Termination Services",
-    "Uncapped Liability",
-]
-
-
 def main(sample_size: int = 200) -> None:
     print("=" * 60)
-    print("Phase 1 — CUAD data loading")
+    print("Phase 1 - CUAD data loading")
     print("=" * 60)
 
-    ds = _load_cuad_hf()
+    # Step 1: Load CUADv1.json (includes negative rows)
+    print("Step 1: Loading CUADv1.json (includes negative/absent rows) ...")
+    rows = _load_cuad_json()
 
-    # Parse with all candidate skills to get full prevalence picture
-    print("\nStep 1: Parsing contracts for all candidate skills ...")
-    contracts_all = _parse_contracts(ds, CANDIDATE_SKILLS)
+    # Step 0: VERIFY all category names (quick local lookup from CUADv1.json)
+    print("\nStep 0 (VERIFY): All unique question/category names in CUAD:")
+    all_questions = _list_all_questions(rows)
+    for i, q in enumerate(all_questions, 1):
+        print(f"  {i:>3}. {q}")
+    print(f"\n  Total categories: {len(all_questions)}\n")
 
-    # Show prevalence on up to sample_size contracts
-    sample_for_prev = contracts_all[:sample_size] if len(contracts_all) > sample_size else contracts_all
-    print(f"\nStep 2: Prevalence on {len(sample_for_prev)} contracts:")
-    print_prevalence(sample_for_prev, CANDIDATE_SKILLS)
-
-    # ── READ skills.yaml if it already exists, else print instructions ────────
+    # Step 2: Load skills.yaml if it exists, else print instructions and exit
     if not SKILLS_FILE.exists():
         print(
-            "skills.yaml does not exist yet.\n"
-            "  1. Review the prevalence table above.\n"
-            "  2. Choose 8 skills in the 25-75% band.\n"
-            "  3. Create experiments/data/skills.yaml (see template below).\n"
-            "  4. Re-run this script.\n\n"
-            "Template:\n"
+            "\nskills.yaml not found. Create experiments/data/skills.yaml with:\n"
             "  skills:\n"
-            "    - label: 'Governing Law'\n"
-            "      definition: 'Specifies which jurisdiction's laws govern the contract.'\n"
-            "      retrieval_query: 'governing law jurisdiction'\n"
-            "      cuad_label: 'Governing Law'\n"
+            "    - label: 'TerminationForConvenience'\n"
+            "      cuad_question: 'Termination For Convenience'\n"
+            "      definition: 'A clause allowing one party to end the contract without cause.'\n"
+            "      retrieval_query: 'termination convenience notice cancel'\n"
         )
         sys.exit(0)
 
     with open(SKILLS_FILE, "r", encoding="utf-8") as f:
         skills_cfg = yaml.safe_load(f)
-    chosen_skills: list[str] = [s["label"] for s in skills_cfg["skills"]]
-    print(f"Chosen skills ({len(chosen_skills)}): {chosen_skills}")
+    skills: list[dict] = skills_cfg["skills"]
+    labels: list[str] = [s["label"] for s in skills]
+    print(f"\nStep 2: Using {len(labels)} chosen skills from skills.yaml:")
+    for s in skills:
+        print(f"  - {s['label']} (matches: '{s['cuad_question']}')")
 
-    # Parse again with chosen skills only for speed
-    contracts = _parse_contracts(ds, chosen_skills)
+    # Step 3: Parse all contracts with chosen skills
+    print("\nStep 3: Parsing contracts ...")
+    contracts = _parse_contracts(rows, skills)
 
-    # Split
+    # Step 4: Prevalence on sample
+    sample = contracts[:sample_size] if len(contracts) > sample_size else contracts
+    print(f"\nStep 4: Prevalence on {len(sample)} contracts:")
+    print_prevalence(sample, labels)
+
+    # Step 5: Stratified split
     data_cfg = CFG.get("data", {})
     n_total = data_cfg.get("n_contracts", 60)
     n_dev = data_cfg.get("n_dev", 30)
     n_pilot = data_cfg.get("n_pilot", 8)
     seed = data_cfg.get("seed", 42)
 
-    print(f"\nStep 3: Creating stratified split (n={n_total}, dev={n_dev}, test={n_total - n_dev}, pilot={n_pilot}, seed={seed}) ...")
-    split = _stratified_split(contracts, chosen_skills, n_total, n_dev, n_pilot, seed)
+    print(f"\nStep 5: Creating stratified split (total={n_total}, dev={n_dev}, "
+          f"test={n_total - n_dev}, pilot={n_pilot}, seed={seed}) ...")
+    split = _stratified_split(contracts, labels, n_total, n_dev, n_pilot, seed)
 
     SPLIT_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(SPLIT_FILE, "w", encoding="utf-8") as f:
         json.dump(split, f, indent=2)
-    print(f"  Split written to {SPLIT_FILE} (commit this file).")
+    print(f"  split.json written to {SPLIT_FILE}  [COMMIT THIS FILE]")
 
-    # Print per-skill prevalence in each split
+    # Step 6: Per-skill prevalence in each split
     id_to_contract = {c["contract_id"]: c for c in contracts}
-    dev_contracts = [id_to_contract[cid] for cid in split["dev"] if cid in id_to_contract]
-    test_contracts = [id_to_contract[cid] for cid in split["test"] if cid in id_to_contract]
+    dev_cs = [id_to_contract[cid] for cid in split["dev"] if cid in id_to_contract]
+    tst_cs = [id_to_contract[cid] for cid in split["test"] if cid in id_to_contract]
 
-    print("\nStep 4: Prevalence per skill per split:")
-    print(f"  {'Skill':<35} {'Dev %':>8}  {'Test %':>8}")
-    print(f"  {'-'*35} {'-'*8}  {'-'*8}")
-    for sl in chosen_skills:
-        dev_p = sum(1 for c in dev_contracts if c["gold"].get(sl, {}).get("present")) / len(dev_contracts)
-        tst_p = sum(1 for c in test_contracts if c["gold"].get(sl, {}).get("present")) / len(test_contracts)
-        print(f"  {sl:<35} {dev_p:>7.1%}  {tst_p:>7.1%}")
+    print("\nStep 6: Per-skill prevalence per split:")
+    print(f"  {'Skill':<35} {'Dev %':>8}  {'Test %':>8}  {'Both classes?':>14}")
+    print(f"  {'-'*35} {'-'*8}  {'-'*8}  {'-'*14}")
+    all_ok = True
+    for sl in labels:
+        dev_p = sum(1 for c in dev_cs if c["gold"].get(sl, {}).get("present")) / max(len(dev_cs), 1)
+        tst_p = sum(1 for c in tst_cs if c["gold"].get(sl, {}).get("present")) / max(len(tst_cs), 1)
+        dev_ok = 0 < dev_p < 1
+        tst_ok = 0 < tst_p < 1
+        ok = "OK" if (dev_ok and tst_ok) else "FAIL"
+        if ok == "FAIL":
+            all_ok = False
+        print(f"  {sl:<35} {dev_p:>7.1%}  {tst_p:>7.1%}  {ok:>14}")
 
-    print("\nPhase 1 acceptance check: PASSED ✓" if SPLIT_FILE.exists() else "\n[ERROR] split.json not written.")
+    if all_ok:
+        print("\nPhase 1 acceptance check: PASSED [OK]")
+        print("  Every skill has both classes in dev and test splits.")
+    else:
+        print("\n[WARN] Some skills are missing a class in dev or test - re-run or adjust n_contracts.")
+
+    print(f"\n  split.json: dev={len(split['dev'])}, test={len(split['test'])}, "
+          f"pilot={len(split.get('pilot', []))} contracts")
 
 
 if __name__ == "__main__":

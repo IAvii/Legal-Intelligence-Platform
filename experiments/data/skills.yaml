@@ -1,0 +1,65 @@
+# experiments/data/skills.yaml
+# 8 CUAD skills chosen from the 25-75% prevalence band on all 510 contracts.
+# Prevalence computed on CUADv1.json (official full dataset, includes negatives).
+# Chosen 2026-10-18 to cover a range of prevalences and legal topic diversity.
+#
+# cuad_question: exact substring match used to identify this skill in CUADv1.json
+# definition:    short self-written definition (≤30 words) used in the prompt
+# retrieval_query: used to retrieve relevant windows from the contract
+
+skills:
+  - label: "TerminationForConvenience"
+    cuad_question: "Termination For Convenience"
+    definition: >
+      A clause allowing one party to end the contract without cause, typically
+      by giving advance written notice.
+    retrieval_query: "termination convenience notice cancel without cause"
+
+  - label: "AuditRights"
+    cuad_question: "Audit Rights"
+    definition: >
+      A clause granting one party the right to audit the books, records, or
+      operations of the counterparty to verify compliance.
+    retrieval_query: "audit right inspect records books compliance"
+
+  - label: "LicenseGrant"
+    cuad_question: "License Grant"
+    definition: >
+      A clause in which one party grants a license to the other to use
+      technology, software, IP, or other intellectual property.
+    retrieval_query: "license grant right to use intellectual property software"
+
+  - label: "CapOnLiability"
+    cuad_question: "Cap On Liability"
+    definition: >
+      A clause that limits the maximum amount one party can be liable to the
+      other for damages or breach, often expressed as a multiple of fees paid.
+    retrieval_query: "cap liability maximum damages limitation aggregate"
+
+  - label: "AntiAssignment"
+    cuad_question: "Anti-Assignment"
+    definition: >
+      A clause requiring consent or advance notice before a party may assign
+      or transfer its rights and obligations to a third party.
+    retrieval_query: "assignment transfer consent notice prior written"
+
+  - label: "Exclusivity"
+    cuad_question: "Exclusivity"
+    definition: >
+      A clause imposing an exclusive dealing commitment, prohibiting one party
+      from working with or licensing to third parties in a defined scope.
+    retrieval_query: "exclusive exclusivity sole provider restriction compete"
+
+  - label: "InsuranceRequirement"
+    cuad_question: "Insurance"
+    definition: >
+      A clause requiring one or both parties to maintain specified types and
+      minimum amounts of insurance coverage during the contract term.
+    retrieval_query: "insurance maintain coverage liability policy certificate"
+
+  - label: "RenewalTerm"
+    cuad_question: "Renewal Term"
+    definition: >
+      A clause specifying the duration and conditions of any renewal period
+      after the initial contract term, including automatic renewals.
+    retrieval_query: "renewal term automatically renew extension period"

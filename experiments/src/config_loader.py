@@ -8,7 +8,29 @@ import os
 from pathlib import Path
 
 import yaml
-from dotenv import load_dotenv
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(dotenv_path: Path | str | None = None) -> None:  # type: ignore
+        """Fallback .env reader if python-dotenv is not installed in the active environment."""
+        if dotenv_path is None:
+            return
+        p = Path(dotenv_path)
+        if not p.is_file():
+            return
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k, v = k.strip(), v.strip().strip("'\"")
+                    if k and k not in os.environ:
+                        os.environ[k] = v
+        except Exception:
+            pass
 
 # ── Locate repo ────────────────────────────────────────────────────────────────
 EXPERIMENTS_DIR = Path(__file__).parent.parent.resolve()
