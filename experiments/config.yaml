@@ -1,0 +1,90 @@
+# ==============================================================================
+# Experiment config — Skill-Aware Model Routing on Legal Contract Analysis
+# ==============================================================================
+# IMPORTANT: prices below are PLACEHOLDERS.
+# Run  python src/verify_setup.py  to populate them from the live Groq pricing
+# page. The script will overwrite this section and record the retrieval date.
+# ==============================================================================
+
+# ── Models ─────────────────────────────────────────────────────────────────────
+models:
+  large:
+    id: "openai/gpt-oss-120b"
+    alias: "large"
+    # Prices VERIFIED 2026-10-18 from console.groq.com/docs/models
+    price_in_per_mtok: 0.15
+    price_out_per_mtok: 0.60
+    price_date: "2026-10-18"
+
+  small:
+    id: "openai/gpt-oss-20b"
+    alias: "small"
+    # Prices VERIFIED 2026-10-18 from console.groq.com/docs/models
+    price_in_per_mtok: 0.075
+    price_out_per_mtok: 0.30
+    price_date: "2026-10-18"
+
+  # mid is optional — include only if rate limits allow.
+  # qwen/qwen3.8-27b is available but expensive ($0.80/$4.00 per Mtok).
+  # Uncomment if you want a third model option:
+  # mid:
+  #   id: "qwen/qwen3.8-27b"
+  #   alias: "mid"
+  #   price_in_per_mtok: 0.80
+  #   price_out_per_mtok: 4.00
+  #   price_date: "2026-10-18"
+
+# ── Retrieval ──────────────────────────────────────────────────────────────────
+retrieval:
+  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  window_chars: 3000
+  window_overlap_chars: 300
+  top_k: 3                    # windows sent as context per skill call
+
+# ── Sampling & splits ──────────────────────────────────────────────────────────
+data:
+  n_contracts: 60             # 30 dev + 30 test; shrink to 40 if rate limits bite
+  n_dev: 30
+  n_test: 30
+  n_pilot: 8                  # subset of dev; used for cheap debugging
+  seed: 42
+  split_file: "data/split.json"
+  skills_file: "data/skills.yaml"
+
+# ── LLM call settings ──────────────────────────────────────────────────────────
+llm:
+  temperature: 0
+  max_tokens: 256             # JSON response is small; keeps cost low
+  prompt_version: "v1"
+  prompt_file: "prompts/skill_presence_v1.txt"
+
+# ── Rate limiting & retry ──────────────────────────────────────────────────────
+rate_limit:
+  # Groq free-tier limits (VERIFY at https://console.groq.com/docs/rate-limits)
+  # These are conservative defaults; adjust after Phase 0 verification.
+  requests_per_minute: 30     # per model
+  tokens_per_minute: 14400    # free tier is often ~6000 RPM but token-limited
+  retry_max_attempts: 6
+  retry_wait_min_s: 1
+  retry_wait_max_s: 60
+
+# ── Disk cache ─────────────────────────────────────────────────────────────────
+cache:
+  dir: "cache"
+  embedding_dir: "cache/embeddings"
+
+# ── Router lambda sweep ────────────────────────────────────────────────────────
+routing:
+  lambda_values: [0, 0.05, 0.1, 0.2, 0.35, 0.5, 1.0]
+  bootstrap_n: 1000
+  bootstrap_seed: 42
+  lcb_percentile: 10          # 10th percentile of Beta(alpha, beta)
+
+# ── Output paths ───────────────────────────────────────────────────────────────
+results:
+  raw_calls: "results/raw_calls.jsonl"
+  profiles_json: "results/profiles.json"
+  profiles_csv: "results/profiles.csv"
+  router_eval_csv: "results/router_eval.csv"
+  pareto_png: "results/pareto.png"
+  heatmap_png: "results/skill_heatmap.png"

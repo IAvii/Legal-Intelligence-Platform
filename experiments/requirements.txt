@@ -1,0 +1,15 @@
+# experiment-only deps — do NOT add backend app deps here
+# Note: numpy==1.26.4 has no Python 3.13 wheel; >=2.0 has pre-built wheels.
+groq==0.11.0
+tenacity==8.5.0
+fastembed>=0.4.0
+numpy>=2.0
+scipy>=1.13.0
+pandas>=2.2.0
+matplotlib>=3.9.0
+pyyaml>=6.0.2
+tqdm>=4.66.0
+python-dotenv==1.0.1
+datasets>=2.21.0
+httpx>=0.27,<0.28
+pytest>=8.0.0

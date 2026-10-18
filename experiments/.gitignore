@@ -1,0 +1,22 @@
+# Raw dataset — do NOT commit CUAD files
+data/raw/
+
+# Disk caches (large; regenerable)
+cache/
+
+# Virtual environment
+.venv/
+venv/
+
+# Secrets
+.env
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Results are committed (small CSVs, PNGs)
+# Except the raw JSONL if it grows large — add here if needed:
+# results/raw_calls.jsonl
